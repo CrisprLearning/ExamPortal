@@ -68,6 +68,7 @@ angular.module('attemptExamApp', ['ngCookies'])
     $scope.questionsInSection = [];
     $scope.displayingQuestion = {};
     $scope.questionImageLoading = false;
+    $scope.questionImageError = false;
 
     //Preferences
     $scope.criprInsightsEnabled = false;
@@ -120,6 +121,7 @@ angular.module('attemptExamApp', ['ngCookies'])
     $scope.displayQuestionFromSection = function(sectionId, questionId) {
         //Show the "Question #N" placeholder until the new question image finishes loading
         $scope.questionImageLoading = true;
+        $scope.questionImageError = false;
 
         $scope.questionsInSection = $scope.examDetails[sectionId].questions;
         $scope.displayingQuestion = $scope.questionsInSection[questionId];
@@ -134,14 +136,19 @@ angular.module('attemptExamApp', ['ngCookies'])
         var questionImage = document.getElementById("questionAttemptImageContent");
         if (!questionImage) return;
 
-        var clearLoadingState = function() {
+        questionImage.addEventListener("load", function() {
             $scope.$applyAsync(function() {
                 $scope.questionImageLoading = false;
+                $scope.questionImageError = false;
             });
-        };
+        });
 
-        questionImage.addEventListener("load", clearLoadingState);
-        questionImage.addEventListener("error", clearLoadingState);
+        questionImage.addEventListener("error", function() {
+            $scope.$applyAsync(function() {
+                $scope.questionImageLoading = false;
+                $scope.questionImageError = true;
+            });
+        });
     });
 
     $scope.saveAndNext = function(currentSectionId, currentQuestionId, currentQuestionKey, answerOpted) {

@@ -67,6 +67,7 @@ angular.module('attemptExamApp', ['ngCookies'])
     $scope.currentSection = {};
     $scope.questionsInSection = [];
     $scope.displayingQuestion = {};
+    $scope.questionImageLoading = false;
 
     //Preferences
     $scope.criprInsightsEnabled = false;
@@ -117,6 +118,9 @@ angular.module('attemptExamApp', ['ngCookies'])
         localStorage.setItem("currentSectionOpen", 1);
 
     $scope.displayQuestionFromSection = function(sectionId, questionId) {
+        //Show the "Question #N" placeholder until the new question image finishes loading
+        $scope.questionImageLoading = true;
+
         $scope.questionsInSection = $scope.examDetails[sectionId].questions;
         $scope.displayingQuestion = $scope.questionsInSection[questionId];
         $scope.displayingQuestion.number = questionId;
@@ -124,6 +128,21 @@ angular.module('attemptExamApp', ['ngCookies'])
 
         $scope.displayingQuestion.answer = $scope.findAlreadySubmittedAnswer($scope.displayingQuestion.questionDisplayKey);
     }
+
+    //Hide the "Question #N" placeholder once the question image has loaded (or failed)
+    angular.element(document).ready(function() {
+        var questionImage = document.getElementById("questionAttemptImageContent");
+        if (!questionImage) return;
+
+        var clearLoadingState = function() {
+            $scope.$applyAsync(function() {
+                $scope.questionImageLoading = false;
+            });
+        };
+
+        questionImage.addEventListener("load", clearLoadingState);
+        questionImage.addEventListener("error", clearLoadingState);
+    });
 
     $scope.saveAndNext = function(currentSectionId, currentQuestionId, currentQuestionKey, answerOpted) {
 

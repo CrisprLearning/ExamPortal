@@ -17,12 +17,12 @@ angular.module('attemptExamApp', ['ngCookies'])
 
     function getUserToken() {
         const urlParams = new URLSearchParams(window.location.search);
-        return decodeURIComponent(urlParams.get('user'));
+        return decodeURIComponent(urlParams.get('token'));
     }
 
     function getExamTokenFromURL() {
         const urlParams = new URLSearchParams(window.location.search);
-        return decodeURIComponent(urlParams.get('exam'));
+        return decodeURIComponent(urlParams.get('quiz'));
     }
 
 

@@ -1,0 +1,7 @@
+<svg width="56" height="56" viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg">
+    <!-- Purple Circle -->
+    <circle cx="28" cy="28" r="28" fill="#745195"/>
+    
+    <!-- Green Dot (35% of width) -->
+    <circle cx="44" cy="44" r="9.8" fill="#4CAF50"/>
+</svg>

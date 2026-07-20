@@ -218,8 +218,7 @@
         function proceedToExam() {
 
             const urlParams = new URLSearchParams(window.location.search);
-            const examKey = urlParams.get('exam');
-            const seriesKey = urlParams.get('series');
+            const quizKey = urlParams.get('quiz');
             const userToken = getUserTokenForInstructions();
 
 
@@ -234,8 +233,7 @@
             };
 
             var reqData = {
-                "exam": examKey,
-                "series": seriesKey,
+                "quiz": quizKey
                 "fingerprint": browserFingerprint 
             }
 

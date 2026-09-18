@@ -167,6 +167,34 @@ angular.module('attemptExamApp', ['ngCookies'])
     }
 
     // ---- IndexedDB persistence (best effort; every call is guarded) ----
+    function idbRawRequest(db, mode, action) {
+        return new Promise(resolve => {
+            if (!db) return resolve(undefined);
+            try {
+                const tx = db.transaction(IDB_STORE, mode);
+                const request = action(tx.objectStore(IDB_STORE));
+                request.onsuccess = function() { resolve(request.result); };
+                request.onerror = function() { resolve(undefined); };
+                tx.onabort = function() { resolve(undefined); };
+            } catch (e) {
+                resolve(undefined);
+            }
+        });
+    }
+
+    // Blobs are only valid for the exam they were downloaded for: wipe the store
+    // when it belongs to another exam. Runs as part of opening the DB so no read
+    // can ever see another exam's images.
+    async function scopeImageDbToExam(db, examToken) {
+        if (!db) return null;
+        const storedToken = await idbRawRequest(db, 'readonly', store => store.get(IDB_TOKEN_KEY));
+        if (storedToken !== examToken) {
+            await idbRawRequest(db, 'readwrite', store => store.clear());
+            await idbRawRequest(db, 'readwrite', store => store.put(examToken, IDB_TOKEN_KEY));
+        }
+        return db;
+    }
+
     let imageDbPromise = null;
     function openImageDb() {
         if (imageDbPromise) return imageDbPromise;
@@ -183,37 +211,17 @@ angular.module('attemptExamApp', ['ngCookies'])
             } catch (e) {
                 resolve(null);
             }
-        });
+        }).then(db => scopeImageDbToExam(db, getExamTokenFromURL())).catch(() => null);
         return imageDbPromise;
     }
 
     function idbRequest(mode, action) {
-        return openImageDb().then(db => new Promise(resolve => {
-            if (!db) return resolve(undefined);
-            try {
-                const tx = db.transaction(IDB_STORE, mode);
-                const request = action(tx.objectStore(IDB_STORE));
-                request.onsuccess = function() { resolve(request.result); };
-                request.onerror = function() { resolve(undefined); };
-                tx.onabort = function() { resolve(undefined); };
-            } catch (e) {
-                resolve(undefined);
-            }
-        }));
+        return openImageDb().then(db => idbRawRequest(db, mode, action));
     }
 
     function idbGet(key)        { return idbRequest('readonly',  store => store.get(key)); }
     function idbPut(key, value) { return idbRequest('readwrite', store => store.put(value, key)); }
     function idbClear()         { return idbRequest('readwrite', store => store.clear()); }
-
-    // Blobs are only valid for the exam they were downloaded for
-    async function scopeImageDbToExam(examToken) {
-        const storedToken = await idbGet(IDB_TOKEN_KEY);
-        if (storedToken !== examToken) {
-            await idbClear();
-            await idbPut(IDB_TOKEN_KEY, examToken);
-        }
-    }
 
     // ---- Fetch strategies ----
     function isImageBlob(blob) {
@@ -335,7 +343,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         $scope.questionCacheStatus = { total: queue.length, loaded: 0, failed: 0, done: queue.length === 0 };
         if (queue.length === 0) return;
 
-        scopeImageDbToExam(getExamTokenFromURL()).then(function() {
+        openImageDb().then(function() {
             let next = 0;
             const worker = async function() {
                 while (next < queue.length && runId === preloadRunId) {

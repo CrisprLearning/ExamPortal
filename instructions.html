@@ -6,6 +6,94 @@
     <title>Exam Instructions</title>
     <link rel="stylesheet" href="assets/css/terms.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        /* Secret key re-entry popup */
+        .secret-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+        .secret-modal-overlay.open { display: flex; }
+        .secret-modal {
+            background: #fff;
+            border-radius: 8px;
+            padding: 25px 30px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+            text-align: center;
+            font-family: Tahoma, sans-serif;
+        }
+        .secret-modal h4 {
+            margin: 0 0 8px;
+            color: #083e58;
+            font-size: 18px;
+        }
+        .secret-modal p {
+            margin: 0 0 18px;
+            color: #555;
+            font-size: 14px;
+        }
+        .secret-modal .secret-error {
+            color: #dc3545;
+            font-size: 13px;
+            min-height: 18px;
+            margin: 0 0 12px;
+        }
+        .secret-boxes {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        .secret-boxes input {
+            width: 44px;
+            height: 52px;
+            text-align: center;
+            font-size: 24px;
+            border: 2px solid #ccc;
+            border-radius: 6px;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+        .secret-boxes input:focus {
+            border-color: #083e58;
+            box-shadow: 0 0 0 2px rgba(8, 62, 88, 0.15);
+        }
+        .secret-modal .btn-proceed[disabled] {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Generic message popup (errors / warnings) */
+        .message-modal .message-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+        .message-modal.is-error .message-icon { color: #dc3545; }
+        .message-modal.is-warning .message-icon { color: #f0ad4e; }
+        .message-modal.is-error h4 { color: #dc3545; }
+        .message-modal.is-warning h4 { color: #b7791f; }
+        .message-modal p {
+            word-break: break-word;
+            line-height: 1.5;
+        }
+        .btn-message-close {
+            background-color: #083e58;
+            color: #fff;
+            padding: 10px 25px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .btn-message-close:hover { background-color: #062f43; }
+    </style>
 </head>
 <body>
     <input type="hidden" id="hdfBaseUrl" value="/">
@@ -157,6 +245,34 @@
         </div>
     </div>
 
+    <!-- Secret key re-entry popup -->
+    <div id="secretModal" class="secret-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="secretModalTitle">
+        <div class="secret-modal">
+            <h4 id="secretModalTitle"><i class="fas fa-key"></i> Enter Secret Key</h4>
+            <p>The secret key provided is incorrect. Please re-enter the 6-digit secret key to start the exam.</p>
+            <div class="secret-boxes" id="secretBoxes">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 1">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 2">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 3">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 4">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 5">
+                <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 6">
+            </div>
+            <div class="secret-error" id="secretError"></div>
+            <button id="secretContinueButton" class="btn btn-proceed" onclick="continueWithSecret()"><i class="fas fa-arrow-right"></i> Continue</button>
+        </div>
+    </div>
+
+    <!-- Generic message popup -->
+    <div id="messageModal" class="secret-modal-overlay" role="alertdialog" aria-modal="true" aria-labelledby="messageModalTitle" aria-describedby="messageModalText">
+        <div class="secret-modal message-modal is-error">
+            <div class="message-icon"><i id="messageModalIcon" class="fas fa-exclamation-circle"></i></div>
+            <h4 id="messageModalTitle">Something went wrong</h4>
+            <p id="messageModalText"></p>
+            <button id="messageModalClose" class="btn btn-message-close" onclick="closeMessageModal()">OK</button>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/2.11.6/umd/popper.min.js"></script>
@@ -166,6 +282,36 @@
         function getUserTokenForInstructions() {
             const urlParams = new URLSearchParams(window.location.search);
             return "Bearer " + decodeURIComponent(urlParams.get('token'));
+        }
+
+        // ---- Generic message popup (replaces alert()) ----
+        function showMessageModal(message, options) {
+            options = options || {};
+            var type = options.type || 'error';
+            var modal = document.getElementById('messageModal');
+            var card = modal.querySelector('.message-modal');
+            var icon = document.getElementById('messageModalIcon');
+
+            card.classList.remove('is-error', 'is-warning');
+            card.classList.add(type === 'warning' ? 'is-warning' : 'is-error');
+            icon.className = type === 'warning' ? 'fas fa-exclamation-triangle' : 'fas fa-exclamation-circle';
+
+            document.getElementById('messageModalTitle').textContent =
+                options.title || (type === 'warning' ? 'Please note' : 'Something went wrong');
+            document.getElementById('messageModalText').textContent =
+                message || 'An unexpected error occurred. Please try again.';
+
+            modal.classList.add('open');
+            document.getElementById('messageModalClose').focus();
+        }
+
+        function closeMessageModal() {
+            document.getElementById('messageModal').classList.remove('open');
+        }
+
+        function showApiError(response, fallback) {
+            var message = response && (response.message || response.error);
+            showMessageModal(message || fallback, { title: 'Unable to start the exam' });
         }
 
         // Remove exam specific keys from localStorage    
@@ -208,19 +354,37 @@
             if(isExamDataPresent()) {
                 document.getElementById("proceedButton").style.display = 'none';
                 setTimeout(function() {
-                    alert("ERROR: You cannot open multiple exam windows in the same browser. Please submit any ongoing exam before starting a new one.");
+                    showMessageModal(
+                        "You cannot open multiple exam windows in the same browser. Please submit any ongoing exam before starting a new one.",
+                        { title: 'Exam already in progress' }
+                    );
                 }, 100);
             }
         }
 
         renderCustomContent();
 
-        function proceedToExam() {
+        // Secret key: read from the "secret" URL param, default to 0 when absent.
+        function getSecretFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const secret = urlParams.get('secret');
+            return (secret === null || secret.trim() === '') ? '0' : secret.trim();
+        }
+
+        // Detect an "incorrect secret key" response from the start-quiz API.
+        function isIncorrectSecretResponse(response) {
+            if (!response) return false;
+            var text = String(response.message || response.error || '').toLowerCase();
+            var mentionsKey = text.indexOf('secret') !== -1 || text.indexOf('key') !== -1;
+            var saysWrong = text.indexOf('incorrect') !== -1 || text.indexOf('invalid') !== -1 ||
+                            text.indexOf('wrong') !== -1 || text.indexOf('mismatch') !== -1;
+            return mentionsKey && saysWrong;
+        }
+
+        function startExamWithSecret(secret) {
 
             const urlParams = new URLSearchParams(window.location.search);
             const quizKey = urlParams.get('quiz');
-            const userToken = getUserTokenForInstructions();
-
 
             let browserFingerprint = {
                 screenWidth: screen.width,
@@ -238,7 +402,7 @@
             }
 
             var startExamRequest = {
-              "url": "https://crisprtech.app/crispr-apis/user/quiz/start-quiz.php?termsAccepted=1",
+              "url": "https://crisprtech.app/crispr-apis/user/quiz/start-quiz.php?termsAccepted=1&secret=" + encodeURIComponent(secret),
               "method": "POST",
               "timeout": 0,
               "data" : JSON.stringify(reqData),
@@ -248,25 +412,144 @@
               },
             };
 
+            setSecretModalBusy(true);
+
             $.ajax(startExamRequest).done(function (startExamResponse) {
+                setSecretModalBusy(false);
+
                 if(startExamResponse.status == "success") {
 
                     //clean up localstorage
                     unsetExamMandatoryData();
+                    closeSecretModal();
 
                     var redirectUrl = startExamResponse.data.url;
                     location.replace(redirectUrl);
                 
+                } else if (isIncorrectSecretResponse(startExamResponse)) {
+                    openSecretModal(secret, startExamResponse.message || startExamResponse.error);
                 } else {
-                    alert(startExamResponse.message || startExamResponse.error);
+                    showApiError(startExamResponse, 'The exam could not be started. Please try again.');
                 }
+            }).fail(function () {
+                setSecretModalBusy(false);
+                showMessageModal("Please check your internet connection and try again.", { title: 'Unable to start the exam' });
+            });
+        }
+
+        function proceedToExam() {
+            startExamWithSecret(getSecretFromUrl());
+        }
+
+        // ---- Secret key popup ----
+        function secretBoxInputs() {
+            return Array.prototype.slice.call(document.querySelectorAll('#secretBoxes input'));
+        }
+
+        function fillSecretBoxes(secret) {
+            var chars = String(secret || '').split('');
+            secretBoxInputs().forEach(function (input, i) {
+                input.value = chars[i] || '';
+            });
+        }
+
+        function readSecretBoxes() {
+            return secretBoxInputs().map(function (input) { return input.value; }).join('');
+        }
+
+        function openSecretModal(prefill, errorMessage) {
+            var modal = document.getElementById('secretModal');
+            var isAlreadyOpen = modal.classList.contains('open');
+
+            // First open: prefill from the URL secret. Re-open after a failed retry: keep what the user typed.
+            if (!isAlreadyOpen) {
+                fillSecretBoxes(prefill);
+            }
+            document.getElementById('secretError').textContent = isAlreadyOpen && errorMessage ? errorMessage : '';
+            modal.classList.add('open');
+
+            var inputs = secretBoxInputs();
+            var firstEmpty = inputs.find(function (input) { return input.value === ''; }) || inputs[0];
+            firstEmpty.focus();
+            firstEmpty.select();
+        }
+
+        function closeSecretModal() {
+            document.getElementById('secretModal').classList.remove('open');
+        }
+
+        function setSecretModalBusy(isBusy) {
+            var button = document.getElementById('secretContinueButton');
+            button.disabled = isBusy;
+            button.innerHTML = isBusy
+                ? '<i class="fas fa-spinner fa-spin"></i> Please wait...'
+                : '<i class="fas fa-arrow-right"></i> Continue';
+        }
+
+        function continueWithSecret() {
+            var secret = readSecretBoxes();
+            if (secret.length !== 6) {
+                document.getElementById('secretError').textContent = 'Please enter all 6 characters of the secret key.';
+                var inputs = secretBoxInputs();
+                var firstEmpty = inputs.find(function (input) { return input.value === ''; }) || inputs[0];
+                firstEmpty.focus();
+                return;
+            }
+            document.getElementById('secretError').textContent = '';
+            startExamWithSecret(secret);
+        }
+
+        function initSecretBoxes() {
+            var inputs = secretBoxInputs();
+
+            inputs.forEach(function (input, index) {
+                input.addEventListener('input', function () {
+                    // keep a single character per box
+                    if (input.value.length > 1) {
+                        input.value = input.value.slice(-1);
+                    }
+                    if (input.value !== '' && index < inputs.length - 1) {
+                        inputs[index + 1].focus();
+                        inputs[index + 1].select();
+                    }
+                });
+
+                input.addEventListener('keydown', function (e) {
+                    if (e.key === 'Backspace' && input.value === '' && index > 0) {
+                        inputs[index - 1].focus();
+                        inputs[index - 1].value = '';
+                        e.preventDefault();
+                    } else if (e.key === 'ArrowLeft' && index > 0) {
+                        inputs[index - 1].focus();
+                        e.preventDefault();
+                    } else if (e.key === 'ArrowRight' && index < inputs.length - 1) {
+                        inputs[index + 1].focus();
+                        e.preventDefault();
+                    } else if (e.key === 'Enter') {
+                        continueWithSecret();
+                        e.preventDefault();
+                    }
+                });
+
+                input.addEventListener('focus', function () { input.select(); });
+
+                // Paste a full code into any box and spread it across all boxes
+                input.addEventListener('paste', function (e) {
+                    var pasted = (e.clipboardData || window.clipboardData).getData('text').trim();
+                    if (pasted.length > 1) {
+                        e.preventDefault();
+                        fillSecretBoxes(pasted.slice(0, inputs.length));
+                        var target = Math.min(pasted.length, inputs.length) - 1;
+                        inputs[target].focus();
+                    }
+                });
             });
         }
 
         function check_instruction(sectionId) {
             const checkbox = document.getElementById(`${sectionId}_ch`);
             if (!checkbox.checked) {
-                alert("Please confirm that you have read and understood the instructions.");
+                showMessageModal("Please confirm that you have read and understood the instructions before proceeding.", { type: 'warning', title: 'Confirmation required' });
                 return;
             }
 
@@ -276,6 +559,15 @@
         // Initialize the page
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('1').style.display = 'block';
+            initSecretBoxes();
+
+            var messageModal = document.getElementById('messageModal');
+            messageModal.addEventListener('click', function (e) {
+                if (e.target === messageModal) closeMessageModal();
+            });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && messageModal.classList.contains('open')) closeMessageModal();
+            });
         });
 
 

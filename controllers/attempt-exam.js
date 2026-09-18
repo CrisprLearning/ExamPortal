@@ -118,6 +118,257 @@ angular.module('attemptExamApp', ['ngCookies'])
     if(!localStorage.getItem("currentSectionOpen"))
         localStorage.setItem("currentSectionOpen", 1);
 
+
+    /***********************************************************************
+     * QUESTION IMAGE CACHE
+     *
+     * Once the quiz payload arrives, every question image is pre-fetched so
+     * navigating between questions no longer depends on the network.
+     *
+     *  1. fetch() the image -> Blob -> object URL (served instantly, and
+     *     persisted to IndexedDB so a page reload does not re-download).
+     *  2. If fetch is blocked (e.g. the image host does not send CORS
+     *     headers) fall back to warming the image with new Image(), which
+     *     keeps it in the browser's memory/HTTP cache.
+     *  3. Anything that could not be cached simply loads on demand as before.
+     ***********************************************************************/
+    const CACHE_CONCURRENCY = 4;
+    const CACHE_MAX_ATTEMPTS = 3;
+    const IDB_NAME = 'crisprExamQuestionCache';
+    const IDB_STORE = 'images';
+    const IDB_TOKEN_KEY = '__examToken';
+
+    const cachedUrlByKey = new Map();   // questionDisplayKey -> blob: object URL
+    const warmImageByKey = new Map();   // questionDisplayKey -> Image (fallback, keeps browser cache warm)
+    const cacheInFlight = new Map();    // questionDisplayKey -> Promise<boolean>
+    let preloadRunId = 0;
+
+    $scope.questionCacheStatus = { total: 0, loaded: 0, failed: 0, done: false };
+
+    function isQuestionCached(key) {
+        return cachedUrlByKey.has(key) || warmImageByKey.has(key);
+    }
+
+    function getQuestionDisplayUrl(question) {
+        if (!question) return '';
+        return cachedUrlByKey.get(question.questionDisplayKey) || question.url;
+    }
+
+    function dropCachedUrl(key) {
+        const objectUrl = cachedUrlByKey.get(key);
+        if (objectUrl) {
+            cachedUrlByKey.delete(key);
+            try { URL.revokeObjectURL(objectUrl); } catch (e) {}
+        }
+    }
+
+    function wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // ---- IndexedDB persistence (best effort; every call is guarded) ----
+    let imageDbPromise = null;
+    function openImageDb() {
+        if (imageDbPromise) return imageDbPromise;
+        imageDbPromise = new Promise(resolve => {
+            try {
+                if (!window.indexedDB) return resolve(null);
+                const request = indexedDB.open(IDB_NAME, 1);
+                request.onupgradeneeded = function() {
+                    request.result.createObjectStore(IDB_STORE);
+                };
+                request.onsuccess = function() { resolve(request.result); };
+                request.onerror = function() { resolve(null); };
+                request.onblocked = function() { resolve(null); };
+            } catch (e) {
+                resolve(null);
+            }
+        });
+        return imageDbPromise;
+    }
+
+    function idbRequest(mode, action) {
+        return openImageDb().then(db => new Promise(resolve => {
+            if (!db) return resolve(undefined);
+            try {
+                const tx = db.transaction(IDB_STORE, mode);
+                const request = action(tx.objectStore(IDB_STORE));
+                request.onsuccess = function() { resolve(request.result); };
+                request.onerror = function() { resolve(undefined); };
+                tx.onabort = function() { resolve(undefined); };
+            } catch (e) {
+                resolve(undefined);
+            }
+        }));
+    }
+
+    function idbGet(key)        { return idbRequest('readonly',  store => store.get(key)); }
+    function idbPut(key, value) { return idbRequest('readwrite', store => store.put(value, key)); }
+    function idbClear()         { return idbRequest('readwrite', store => store.clear()); }
+
+    // Blobs are only valid for the exam they were downloaded for
+    async function scopeImageDbToExam(examToken) {
+        const storedToken = await idbGet(IDB_TOKEN_KEY);
+        if (storedToken !== examToken) {
+            await idbClear();
+            await idbPut(IDB_TOKEN_KEY, examToken);
+        }
+    }
+
+    // ---- Fetch strategies ----
+    function isImageBlob(blob) {
+        return blob && blob.size > 0 && (blob.type || '').indexOf('image/') === 0;
+    }
+
+    async function fetchQuestionBlob(url) {
+        const response = await fetch(url, { cache: 'force-cache' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const blob = await response.blob();
+        if (!isImageBlob(blob)) throw new Error('Not an image');
+        return blob;
+    }
+
+    function warmImageViaTag(url) {
+        return new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = function() { resolve(image); };
+            image.onerror = function() { reject(new Error('Image failed to load')); };
+            image.src = url;
+        });
+    }
+
+    function storeCachedBlob(key, blob) {
+        dropCachedUrl(key);
+        const objectUrl = URL.createObjectURL(blob);
+        cachedUrlByKey.set(key, objectUrl);
+
+        // If this question is on screen and still waiting (or failed), swap the cached copy in
+        const question = $scope.displayingQuestion;
+        if (question && question.questionDisplayKey === key && ($scope.questionImageLoading || $scope.questionImageError)) {
+            question.displayUrl = objectUrl;
+            $scope.questionImageLoading = true;
+            $scope.questionImageError = false;
+            $scope.$applyAsync();
+        }
+    }
+
+    async function cacheQuestionOnce(question) {
+        const key = question.questionDisplayKey;
+
+        // 1) Already persisted from an earlier page load?
+        const storedBlob = await idbGet(key);
+        if (isImageBlob(storedBlob)) {
+            storeCachedBlob(key, storedBlob);
+            return true;
+        }
+
+        // 2) Download as a blob (works when the image host allows CORS)
+        try {
+            const blob = await fetchQuestionBlob(question.url);
+            storeCachedBlob(key, blob);
+            idbPut(key, blob);
+            return true;
+        } catch (fetchError) {
+            // 3) Fall back to warming the browser cache through an <img>
+            const image = await warmImageViaTag(question.url);
+            warmImageByKey.set(key, image);
+            return true;
+        }
+    }
+
+    async function cacheQuestionWithRetry(question, runId) {
+        for (let attempt = 1; attempt <= CACHE_MAX_ATTEMPTS; attempt++) {
+            if (runId !== preloadRunId) return false; // exam ended / restarted
+            try {
+                return await cacheQuestionOnce(question);
+            } catch (e) {
+                if (attempt < CACHE_MAX_ATTEMPTS) await wait(1500 * attempt);
+            }
+        }
+        return false;
+    }
+
+    // Cache a single question (de-duplicated). Used by the preload queue and
+    // as a priority bump whenever a question is opened before its turn.
+    function ensureQuestionCached(question) {
+        if (!question || !question.questionDisplayKey || !question.url) return Promise.resolve(false);
+        const key = question.questionDisplayKey;
+        if (isQuestionCached(key)) return Promise.resolve(true);
+        if (cacheInFlight.has(key)) return cacheInFlight.get(key);
+
+        const runId = preloadRunId;
+        const promise = cacheQuestionWithRetry(question, runId)
+            .catch(() => false)
+            .finally(() => cacheInFlight.delete(key));
+        cacheInFlight.set(key, promise);
+        return promise;
+    }
+
+    // Build the download order: current question, rest of its section, then the other sections
+    function buildPreloadOrder(examDetails, startSectionId, startQuestionId) {
+        const ordered = [];
+        const seen = new Set();
+        const push = function(question) {
+            if (question && question.questionDisplayKey && !seen.has(question.questionDisplayKey)) {
+                seen.add(question.questionDisplayKey);
+                ordered.push(question);
+            }
+        };
+
+        const sectionIds = Object.keys(examDetails || {}).sort((a, b) => parseInt(a) - parseInt(b));
+        const questionsOf = sectionId => Object.values((examDetails[sectionId] && examDetails[sectionId].questions) || {});
+
+        if (examDetails && examDetails[startSectionId]) {
+            const questions = examDetails[startSectionId].questions || {};
+            push(questions[startQuestionId]);
+            questionsOf(startSectionId).forEach(push);
+        }
+        sectionIds.forEach(sectionId => questionsOf(sectionId).forEach(push));
+
+        return ordered;
+    }
+
+    $scope.preloadAllQuestions = function(startSectionId, startQuestionId) {
+        const runId = ++preloadRunId;
+        const queue = buildPreloadOrder($scope.examDetails, startSectionId, startQuestionId);
+
+        $scope.questionCacheStatus = { total: queue.length, loaded: 0, failed: 0, done: queue.length === 0 };
+        if (queue.length === 0) return;
+
+        scopeImageDbToExam(getExamTokenFromURL()).then(function() {
+            let next = 0;
+            const worker = async function() {
+                while (next < queue.length && runId === preloadRunId) {
+                    const question = queue[next++];
+                    const ok = await ensureQuestionCached(question);
+                    if (runId !== preloadRunId) return;
+                    if (ok) $scope.questionCacheStatus.loaded++; else $scope.questionCacheStatus.failed++;
+                    $scope.$applyAsync();
+                }
+            };
+
+            const workers = [];
+            for (let i = 0; i < CACHE_CONCURRENCY; i++) workers.push(worker());
+            return Promise.all(workers);
+        }).then(function() {
+            if (runId !== preloadRunId) return;
+            $scope.questionCacheStatus.done = true;
+            $scope.$applyAsync();
+        });
+    };
+
+    function clearQuestionCache() {
+        preloadRunId++; // stops any running preload workers
+        cachedUrlByKey.forEach(function(objectUrl) {
+            try { URL.revokeObjectURL(objectUrl); } catch (e) {}
+        });
+        cachedUrlByKey.clear();
+        warmImageByKey.clear();
+        cacheInFlight.clear();
+        $scope.questionCacheStatus = { total: 0, loaded: 0, failed: 0, done: false };
+        idbClear();
+    }
+
     $scope.displayQuestionFromSection = function(sectionId, questionId) {
         //Show the "Question #N" placeholder until the new question image finishes loading
         $scope.questionImageLoading = true;
@@ -129,9 +380,23 @@ angular.module('attemptExamApp', ['ngCookies'])
         $scope.displayingQuestion.sectionId = sectionId;
 
         $scope.displayingQuestion.answer = $scope.findAlreadySubmittedAnswer($scope.displayingQuestion.questionDisplayKey);
+
+        //Serve the image from the local cache when available, otherwise load it directly
+        $scope.displayingQuestion.displayUrl = getQuestionDisplayUrl($scope.displayingQuestion);
+        ensureQuestionCached($scope.displayingQuestion); //Priority bump if it is not cached yet
+        imageRetryCount = 0;
+
+        //Same image is already rendered (e.g. re-opening the current question): no load event will fire
+        var questionImage = document.getElementById("questionAttemptImageContent");
+        if (questionImage && questionImage.complete && questionImage.naturalWidth > 0 &&
+            questionImage.getAttribute("src") === $scope.displayingQuestion.displayUrl) {
+            $scope.questionImageLoading = false;
+        }
     }
 
     //Hide the "Question #N" placeholder once the question image has loaded (or failed)
+    const IMAGE_MAX_RETRIES = 3;
+    let imageRetryCount = 0;
     angular.element(document).ready(function() {
         var questionImage = document.getElementById("questionAttemptImageContent");
         if (!questionImage) return;
@@ -144,6 +409,32 @@ angular.module('attemptExamApp', ['ngCookies'])
         });
 
         questionImage.addEventListener("error", function() {
+            var question = $scope.displayingQuestion;
+            var failedSrc = questionImage.getAttribute("src");
+            if (!question || !failedSrc) return;
+
+            //Retry a few times (keeps showing the "Question #N" placeholder) before giving up
+            if (imageRetryCount < IMAGE_MAX_RETRIES) {
+                imageRetryCount++;
+                setTimeout(function() {
+                    if ($scope.displayingQuestion !== question) return; //User moved on
+
+                    if (failedSrc.indexOf("blob:") === 0) {
+                        //Cached copy is unusable: drop it and go back to the original URL
+                        dropCachedUrl(question.questionDisplayKey);
+                    }
+
+                    var retryUrl = getQuestionDisplayUrl(question);
+                    if (retryUrl !== failedSrc) {
+                        question.displayUrl = retryUrl; //ng-src picks up the new URL
+                        $scope.$applyAsync();
+                    } else {
+                        questionImage.src = failedSrc; //Re-request the same URL
+                    }
+                }, 1500 * imageRetryCount);
+                return;
+            }
+
             $scope.$applyAsync(function() {
                 $scope.questionImageLoading = false;
                 $scope.questionImageError = true;
@@ -656,6 +947,9 @@ angular.module('attemptExamApp', ['ngCookies'])
                 $scope.loadSectionWithQuestion(sectionId, questionId);
                 //$scope.answerDisplayContentRefresh();
 
+                //Pre-fetch every question image so navigation no longer depends on the network
+                $scope.preloadAllQuestions($scope.currentOpenSection, $scope.currentOpenQuestion);
+
                 //Start Exam Timer
                 const totalTimeRemaining = $scope.examMetadata.endTime - $scope.examMetadata.currentTime;
                 const display1 = document.querySelector('#timerCountDown1');
@@ -1060,6 +1354,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         localStorage.removeItem("examSubmissionData");
         localStorage.removeItem("userLastActiveTime");
         localStorage.removeItem("crisprMockTestToken"); 
+        clearQuestionCache();
     }
 
     function renderExamCompleteScreen(reportURL) {

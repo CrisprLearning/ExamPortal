@@ -31,7 +31,7 @@ angular.module('attemptExamApp', ['ngCookies'])
     // ---- Tab switch / minimise (focus loss) violations ----
     // Count persists across reloads, scoped to the current exam token.
     const VIOLATION_STORAGE_KEY = "tabSwitchViolations";
-    const MAX_VIOLATION_WARNINGS = 3;
+    const MAX_VIOLATION_WARNINGS = 5;
     const AUTO_SUBMIT_COUNTDOWN_SECONDS = 5;
 
     let isBootboxVisible = false; // Flag to track modal visibility
@@ -1450,6 +1450,36 @@ angular.module('attemptExamApp', ['ngCookies'])
         }
     }
 
+    // Consecutive save-progress network failures; red banner shows at the threshold,
+    // and a green "Back Online" banner briefly confirms recovery.
+    const SAVE_FAILURE_BANNER_THRESHOLD = 10;
+    const BACK_ONLINE_BANNER_MS = 4000;
+    let consecutiveSaveFailures = 0;
+    let backOnlineBannerPromise = null;
+    $scope.showNetworkUnstableBanner = false;
+    $scope.showBackOnlineBanner = false;
+
+    function onSaveProgressReachedServer() {
+        if (consecutiveSaveFailures >= SAVE_FAILURE_BANNER_THRESHOLD) {
+            $scope.showNetworkUnstableBanner = false;
+            $scope.showBackOnlineBanner = true;
+            $timeout.cancel(backOnlineBannerPromise);
+            backOnlineBannerPromise = $timeout(function() {
+                $scope.showBackOnlineBanner = false;
+            }, BACK_ONLINE_BANNER_MS);
+        }
+        consecutiveSaveFailures = 0;
+    }
+
+    function onSaveProgressNetworkError() {
+        consecutiveSaveFailures++;
+        if (consecutiveSaveFailures >= SAVE_FAILURE_BANNER_THRESHOLD) {
+            $timeout.cancel(backOnlineBannerPromise);
+            $scope.showBackOnlineBanner = false;
+            $scope.showNetworkUnstableBanner = true;
+        }
+    }
+
     $scope.saveExamProgress = function(endExamFlag) { //Note: also auto-save every 30s
 
         var examSubmissionData = localStorage.getItem("examSubmissionData") ? JSON.parse(localStorage.getItem("examSubmissionData")) : {};
@@ -1508,6 +1538,8 @@ angular.module('attemptExamApp', ['ngCookies'])
           }
          })
          .then(function(response) {
+            onSaveProgressReachedServer();
+
             if(response.data.status == "success"){
                 if(response.data.data.submitted) { //The exam got submitted
                     renderExamCompleteScreen(response.data.data.reportURL);
@@ -1517,6 +1549,9 @@ angular.module('attemptExamApp', ['ngCookies'])
             } else {
                 location.reload(); //Save failed (reload)
             }
+        }, function() {
+            // Network error / no response from the server
+            onSaveProgressNetworkError();
         });
     }
 

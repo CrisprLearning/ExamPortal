@@ -23,9 +23,47 @@
       <script src="assets/js/angular-cookies.min.js"></script>
       <script src="controllers/attempt-exam.js"></script>
 
+      <style>
+        /* Shown when save-progress keeps failing (network issues) */
+        .network-unstable-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 2000;
+            background-color: #dc3545;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 20px;
+            height: 20px;
+            text-align: center;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            padding: 0 8px;
+            animation: network-banner-flash 1s ease-in-out infinite;
+        }
+        .network-unstable-banner.is-back-online {
+            background-color: #28a745;
+            animation: none;
+        }
+        @keyframes network-banner-flash {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.45; }
+        }
+      </style>
+
     </head>
 
     <body class="animated-content" ng-app="attemptExamApp" ng-controller="attemptExamController" ng-cloak>
+
+		<div class="network-unstable-banner" ng-show="showNetworkUnstableBanner" role="alert">
+		    <i class="fa fa-exclamation-triangle" style="margin-right: 5px;"></i>Your internet connection is unstable, progress might not be saved
+		</div>
+		<div class="network-unstable-banner is-back-online" ng-show="showBackOnlineBanner" role="status">
+		    <i class="fa fa-check-circle" style="margin-right: 5px;"></i>Back Online! Progress saved.
+		</div>
 
 		<div id="examErrorBanner" class="examErrorBannerPopup">
 		    <div class="examErrorBannerPopup-content">

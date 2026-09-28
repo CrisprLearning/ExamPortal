@@ -31138,34 +31138,6 @@ body.sidebar-collapsed .smartViewIconTop .smartViewIconTopColor:hover {
     transition: background-color 0.3s ease;
 }
 
-/* Background fill animation */
-@keyframes fillBackground {
-    0% {
-        width: 0%;
-    }
-    100% {
-        width: 100%;
-    }
-}
-
-#submit-exam-button-1::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 0%;
-    height: 100%;
-    background-color: #52b062; /* Fill color */
-    z-index: 1;
-    transition: width 5s linear; /* Animation duration */
-}
-
-
-/* Active state for animation */
-#submit-exam-button-1.active::before {
-    width: 100%; /* Trigger animation */
-}
-
 /* Countdown text styling */
 #countdown {
     position: relative;

@@ -17,7 +17,8 @@ angular.module('attemptExamApp', ['ngCookies'])
 
     function getUserToken() {
         const urlParams = new URLSearchParams(window.location.search);
-        return decodeURIComponent(urlParams.get('token'));
+        // start-quiz redirects with "user"; "token" kept for links built elsewhere
+        return decodeURIComponent(urlParams.get('user') || urlParams.get('token'));
     }
 
     function getExamTokenFromURL() {
@@ -27,34 +28,96 @@ angular.module('attemptExamApp', ['ngCookies'])
 
 
 
-    let isBootboxVisible = false; // Flag to track modal visibility
-    document.addEventListener("visibilitychange", function() {
-        if (document.hidden && !isBootboxVisible) {
-            isBootboxVisible = true; // Set flag to prevent multiple modals
+    // ---- Tab switch / minimise (focus loss) violations ----
+    // Count persists across reloads, scoped to the current exam token.
+    const VIOLATION_STORAGE_KEY = "tabSwitchViolations";
+    const MAX_VIOLATION_WARNINGS = 3;
+    const AUTO_SUBMIT_COUNTDOWN_SECONDS = 5;
 
-            bootbox.confirm({
-                title: "<p style='color: #ff9800; font-size: 24px; margin: 0; font-weight: bold;'>Warning!</p>",
-                message: "<p style='color: #444; font-size: 18px; font-weight: 300; line-height: 28px;'>While attempting the test, switching between tabs is strictly prohibited. If you navigate away, it may be considered a violation. Additionally, the timer continues running even if you take a break, and once the allotted time expires, the exam will be auto-submitted. Stay focused to maximize your performance.</p>",
-                buttons: {
-                    cancel: {
-                        label: "Get back to Test",
-                        className: "btn-default"
-                    },
-                    confirm: {
-                        label: "End the Exam",
-                        className: "btn-danger"
-                    }
+    let isBootboxVisible = false; // Flag to track modal visibility
+    let isAutoSubmitting = false;
+
+    function getViolationCount() {
+        try {
+            const stored = JSON.parse(localStorage.getItem(VIOLATION_STORAGE_KEY));
+            return (stored && stored.quiz === getExamTokenFromURL()) ? (parseInt(stored.count) || 0) : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function recordViolation() {
+        const count = getViolationCount() + 1;
+        localStorage.setItem(VIOLATION_STORAGE_KEY, JSON.stringify({ quiz: getExamTokenFromURL(), count: count }));
+        return count;
+    }
+
+    function showViolationWarning(count) {
+        isBootboxVisible = true; // Set flag to prevent multiple modals
+        bootbox.confirm({
+            title: "<p style='color: #ff9800; font-size: 24px; margin: 0; font-weight: bold;'>Warning " + count + " of " + MAX_VIOLATION_WARNINGS + "</p>",
+            message: "<p style='color: #444; font-size: 18px; font-weight: 300; line-height: 28px;'>Switching tabs or minimising the window is not allowed during the exam. The timer keeps running while you are away.<br><br><b>After " + MAX_VIOLATION_WARNINGS + " warnings, your exam will be auto-submitted.</b></p>",
+            buttons: {
+                cancel: {
+                    label: "Get back to Test",
+                    className: "btn-default"
                 },
-                callback: function (result) {
-                    isBootboxVisible = false; // Reset flag after modal closes
-                    if(result) {
-                        $scope.saveExamProgress('TERMINATE');
-                    } else {
-                        // Continue exam
-                        location.reload();
-                    }
+                confirm: {
+                    label: "End the Exam",
+                    className: "btn-danger"
                 }
-            });
+            },
+            callback: function (result) {
+                isBootboxVisible = false; // Reset flag after modal closes
+                if(result) {
+                    $scope.saveExamProgress('TERMINATE');
+                } else {
+                    // Continue exam
+                    location.reload();
+                }
+            }
+        });
+    }
+
+    // Freezes the screen with a countdown, then submits the exam.
+    function startViolationAutoSubmit() {
+        isAutoSubmitting = true;
+        bootbox.hideAll();
+
+        let secondsLeft = AUTO_SUBMIT_COUNTDOWN_SECONDS;
+        const messageFor = function (seconds) {
+            return "<p style='color: #444; font-size: 18px; font-weight: 300; line-height: 28px; margin: 0;'>You have made several violations. Auto-submitting the exam in <b id='violationCountdown'>" + seconds + "</b> seconds.</p>";
+        };
+
+        bootbox.dialog({
+            title: "<p style='color: red; font-size: 24px; margin: 0; font-weight: bold;'><i class='fa fa-exclamation-triangle'></i> Exam Violation</p>",
+            message: messageFor(secondsLeft),
+            closeButton: false,
+            onEscape: false,
+            backdrop: 'static'
+        });
+
+        const countdownTimer = setInterval(function () {
+            secondsLeft--;
+            const counter = document.getElementById('violationCountdown');
+            if (secondsLeft > 0) {
+                if (counter) counter.textContent = secondsLeft;
+            } else {
+                clearInterval(countdownTimer);
+                if (counter) counter.parentNode.innerHTML = "Submitting your exam...";
+                $scope.saveExamProgress('TERMINATE');
+            }
+        }, 1000);
+    }
+
+    document.addEventListener("visibilitychange", function() {
+        if (!document.hidden || isAutoSubmitting) return;
+
+        const count = recordViolation();
+        if (count > MAX_VIOLATION_WARNINGS) {
+            startViolationAutoSubmit();
+        } else if (!isBootboxVisible) {
+            showViolationWarning(count);
         }
     });
 
@@ -137,6 +200,9 @@ angular.module('attemptExamApp', ['ngCookies'])
     const IDB_NAME = 'crisprExamQuestionCache';
     const IDB_STORE = 'images';
     const IDB_TOKEN_KEY = '__examToken';
+    const IDB_EXPIRY_KEY = '__cacheExpiresAt';
+    const CACHE_GRACE_SECONDS = 60 * 60;          // keep images one extra hour past the exam end
+    const CACHE_FALLBACK_TTL_SECONDS = 24 * 60 * 60; // when the end time is unknown
 
     const cachedUrlByKey = new Map();   // questionDisplayKey -> blob: object URL
     const warmImageByKey = new Map();   // questionDisplayKey -> Image (fallback, keeps browser cache warm)
@@ -182,16 +248,35 @@ angular.module('attemptExamApp', ['ngCookies'])
         });
     }
 
+    // Cached images must stay available at least until the exam ends. The end time
+    // comes from the quiz API response; the server/device clock difference is used
+    // so a wrong device clock can never expire the cache early.
+    function getCacheExpiryTimestamp() {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const metadata = $scope.examMetadata || {};
+        const endTime = parseInt(metadata.endTime);
+        const serverNow = parseInt(metadata.currentTime);
+        if (!isNaN(endTime) && !isNaN(serverNow) && endTime > serverNow) {
+            return nowSeconds + (endTime - serverNow) + CACHE_GRACE_SECONDS;
+        }
+        return nowSeconds + CACHE_FALLBACK_TTL_SECONDS;
+    }
+
     // Blobs are only valid for the exam they were downloaded for: wipe the store
-    // when it belongs to another exam. Runs as part of opening the DB so no read
-    // can ever see another exam's images.
+    // when it belongs to another exam or its exam has already ended. Runs as part
+    // of opening the DB so no read can ever see another exam's images.
     async function scopeImageDbToExam(db, examToken) {
         if (!db) return null;
         const storedToken = await idbRawRequest(db, 'readonly', store => store.get(IDB_TOKEN_KEY));
-        if (storedToken !== examToken) {
+        const storedExpiry = parseInt(await idbRawRequest(db, 'readonly', store => store.get(IDB_EXPIRY_KEY)));
+        const expired = isNaN(storedExpiry) || storedExpiry <= Math.floor(Date.now() / 1000);
+
+        if (storedToken !== examToken || expired) {
             await idbRawRequest(db, 'readwrite', store => store.clear());
             await idbRawRequest(db, 'readwrite', store => store.put(examToken, IDB_TOKEN_KEY));
         }
+        // Always refresh the expiry from the latest API response (covers extended exams)
+        await idbRawRequest(db, 'readwrite', store => store.put(getCacheExpiryTimestamp(), IDB_EXPIRY_KEY));
         return db;
     }
 
@@ -823,7 +908,7 @@ angular.module('attemptExamApp', ['ngCookies'])
                     } else {
                         //Go back to old exam
                         const url = new URL(window.location.href);
-                        url.searchParams.set('exam', encodeURIComponent(previousExamToken));
+                        url.searchParams.set('quiz', previousExamToken);
                         window.history.replaceState(null, '', url.toString());
 
                         setTimeout(function() {
@@ -1207,6 +1292,7 @@ angular.module('attemptExamApp', ['ngCookies'])
 
 
             //Update overall counter
+            $scope.examTimeRemaining = timer;
             hours1 = parseInt(timer / 3600, 10);
             minutes1 = parseInt((timer % 3600) / 60, 10);
             seconds1 = parseInt(timer % 60, 10);
@@ -1287,14 +1373,24 @@ angular.module('attemptExamApp', ['ngCookies'])
         return result;
     }
 
-    $scope.countdown = 5;
     $scope.countdownElement = document.getElementById("countdown");
-    $scope.isSubmitClicked = false;
+
+    // e.g. 950 -> "15m 50s", 4550 -> "1h 15m 50s"
+    function formatRemainingTime(totalSeconds) {
+        totalSeconds = Math.max(0, parseInt(totalSeconds, 10) || 0);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return (hours > 0 ? hours + "h " : "") + minutes + "m " + seconds + "s";
+    }
 
     $scope.submitExamConfirmation = function() {
+        const timeLeftText = $scope.examTimeRemaining !== undefined
+            ? " You still have <b>" + formatRemainingTime($scope.examTimeRemaining) + "</b> left on the timer."
+            : "";
         bootbox.confirm({
-                title: "<p style='color: red; font-size: 24px; margin: 0; font-weight: bold;'>Confirm Submission</p>",
-                message: "<p style='color: #444; font-size: 18px; font-weight: 300; line-height: 28px;'>If you proceed, the exam will end immediately. Once submitted, you won’t be able to retake this test for the next 48 hours. Are you sure you want to continue submitting the exam?<br><br><b>Note: You can take a break if needed, but the timer will keep running.</b></p>",
+                title: "<p style='color: red; font-size: 24px; margin: 0; font-weight: bold;'>Are you sure want to Submit this Exam?</p>",
+                message: "<p style='color: #444; font-size: 18px; font-weight: 300; line-height: 28px;'>If you proceed, the exam will end immediately." + timeLeftText + " Once submitted, you won’t be able to retake this test for the next 48 hours. Are you sure you want to continue submitting the exam?<br><br><b>Note: You can take a break if needed, but the timer will keep running.</b></p>",
                 buttons: {
                     cancel: {
                         label: "Continue Exam",
@@ -1312,8 +1408,6 @@ angular.module('attemptExamApp', ['ngCookies'])
                     } else {
                         document.getElementById("submit-exam-button-1").classList.remove("active");
                         $scope.countdownElement.textContent = "Submit Exam"
-                        $scope.countdown = 5;
-                        $scope.isSubmitClicked = false;
                     }
                 }
             });
@@ -1323,35 +1417,8 @@ angular.module('attemptExamApp', ['ngCookies'])
 
         //For Main Timer 1 (Web View)
         $scope.getExamConfirmation = function() {
-            if ($scope.isSubmitClicked) {
-                // If clicked again during countdown, cancel submission
-                $scope.isSubmitClicked = false;
-                $timeout.cancel($scope.countdownPromise); // Cancel the timeout
-                $scope.countdownElement.textContent = "Submit Exam";
-                document.getElementById("submit-exam-button-1").classList.remove("active");
-                return;
-            }
-
-            // First click: Start countdown
-            $scope.isSubmitClicked = true;
             document.getElementById("submit-exam-button-1").classList.add("active");
-
-            $scope.countdown = 5;
-            $scope.countdownElement.textContent = `Click again to Cancel (${$scope.countdown}s)`;
-
-            $scope.startCountdown = function() {
-                $scope.countdown--;
-
-                if ($scope.countdown > 0) {
-                    $scope.countdownElement.textContent = `Click again to Cancel (${$scope.countdown}s)`
-                    $scope.countdownPromise = $timeout($scope.startCountdown, 1000);
-                } else {
-                    $scope.countdownElement.textContent = "Confirm Submission";
-                    $scope.submitExamConfirmation();
-                }
-            };
-
-            $scope.countdownPromise = $timeout($scope.startCountdown, 1000);
+            $scope.submitExamConfirmation();
         };
 
 
@@ -1362,6 +1429,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         localStorage.removeItem("examSubmissionData");
         localStorage.removeItem("userLastActiveTime");
         localStorage.removeItem("crisprMockTestToken"); 
+        localStorage.removeItem("tabSwitchViolations");
         clearQuestionCache();
     }
 

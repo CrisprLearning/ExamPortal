@@ -93,6 +93,25 @@
             transition: background-color 0.3s ease;
         }
         .btn-message-close:hover { background-color: #062f43; }
+        .message-modal-actions {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn-start-fresh {
+            display: none;
+            background-color: #dc3545;
+            color: #fff;
+            padding: 10px 25px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .btn-start-fresh:hover { background-color: #b02a37; color: #fff; }
+        .btn-start-fresh.visible { display: inline-block; }
     </style>
 </head>
 <body>
@@ -157,7 +176,7 @@
                                                         </li>
                                                         <li class="newView_attemptSummaryTextHolderLi">
                                                             <span class="newView_square newView_answeredAndMarkedForReview">0</span>
-                                                            <span class="newView_attemptSummaryText">The question(s) "Answered and Marked for Review" will be considered for evaluation.</span>
+                                                            <span class="newView_attemptSummaryText">The question(s) "Answered and Marked for Review" will NOT be considered for evaluation.</span>
                                                         </li>
                                                     </ol>
                                                 </li>
@@ -248,8 +267,8 @@
     <!-- Secret key re-entry popup -->
     <div id="secretModal" class="secret-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="secretModalTitle">
         <div class="secret-modal">
-            <h4 id="secretModalTitle"><i class="fas fa-key"></i> Enter Secret Key</h4>
-            <p>The secret key provided is incorrect. Please re-enter the 6-digit secret key to start the exam.</p>
+            <h4 id="secretModalTitle"><i class="fas fa-key"></i> Enter the Exam Start Key</h4>
+            <p>This exam needs a start key. Enter the number key shared with you to begin.</p>
             <div class="secret-boxes" id="secretBoxes">
                 <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 1">
                 <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 2">
@@ -269,7 +288,10 @@
             <div class="message-icon"><i id="messageModalIcon" class="fas fa-exclamation-circle"></i></div>
             <h4 id="messageModalTitle">Something went wrong</h4>
             <p id="messageModalText"></p>
-            <button id="messageModalClose" class="btn btn-message-close" onclick="closeMessageModal()">OK</button>
+            <div class="message-modal-actions">
+                <button id="messageModalStartFresh" class="btn btn-start-fresh" onclick="onStartFreshClick()"><i class="fas fa-exclamation-triangle"></i> <span id="messageModalStartFreshLabel">Start Fresh</span></button>
+                <button id="messageModalClose" class="btn btn-message-close" onclick="onMessageModalClose()">OK</button>
+            </div>
         </div>
     </div>
 
@@ -300,6 +322,10 @@
                 options.title || (type === 'warning' ? 'Please note' : 'Something went wrong');
             document.getElementById('messageModalText').textContent =
                 message || 'An unexpected error occurred. Please try again.';
+            document.getElementById('messageModalStartFresh').classList.toggle('visible', !!options.showStartFresh);
+            document.getElementById('messageModalStartFreshLabel').textContent = options.startFreshLabel || 'Start Fresh';
+            document.getElementById('messageModalClose').textContent = options.closeLabel || 'OK';
+            isConfirmingStartFresh = !!options.confirmingStartFresh;
 
             modal.classList.add('open');
             document.getElementById('messageModalClose').focus();
@@ -307,6 +333,50 @@
 
         function closeMessageModal() {
             document.getElementById('messageModal').classList.remove('open');
+        }
+
+        // ---- "Start Fresh" flow for an exam already in progress ----
+        var isConfirmingStartFresh = false;
+
+        function showExamInProgressModal() {
+            showMessageModal(
+                "You cannot open multiple exam windows in the same browser. Please submit any ongoing exam before starting a new one.",
+                { title: 'Exam already in progress', showStartFresh: true }
+            );
+        }
+
+        function onStartFreshClick() {
+            if (isConfirmingStartFresh) {
+                startFresh();
+                return;
+            }
+            showMessageModal(
+                "This will permanently discard the progress of the exam currently in progress in this browser. This cannot be undone.",
+                {
+                    title: 'Are you sure?',
+                    showStartFresh: true,
+                    startFreshLabel: 'Yes, Start Fresh',
+                    closeLabel: 'Cancel',
+                    confirmingStartFresh: true
+                }
+            );
+        }
+
+        // "OK" normally closes; while confirming it acts as "Cancel" and goes back.
+        function onMessageModalClose() {
+            if (isConfirmingStartFresh) {
+                showExamInProgressModal();
+            } else {
+                closeMessageModal();
+            }
+        }
+
+        // Discard the in-progress exam data and allow a new exam to start.
+        function startFresh() {
+            isConfirmingStartFresh = false;
+            unsetExamMandatoryData();
+            closeMessageModal();
+            document.getElementById("proceedButton").style.display = '';
         }
 
         function showApiError(response, fallback) {
@@ -321,6 +391,7 @@
             localStorage.removeItem("examSubmissionData");
             localStorage.removeItem("userLastActiveTime");
             localStorage.removeItem("crisprMockTestToken");
+            localStorage.removeItem("tabSwitchViolations");
         }
 
         function isExamDataPresent() {
@@ -354,10 +425,7 @@
             if(isExamDataPresent()) {
                 document.getElementById("proceedButton").style.display = 'none';
                 setTimeout(function() {
-                    showMessageModal(
-                        "You cannot open multiple exam windows in the same browser. Please submit any ongoing exam before starting a new one.",
-                        { title: 'Exam already in progress' }
-                    );
+                    showExamInProgressModal();
                 }, 100);
             }
         }

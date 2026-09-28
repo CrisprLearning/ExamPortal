@@ -110,6 +110,35 @@ angular.module('attemptExamApp', ['ngCookies'])
         }, 1000);
     }
 
+    // ---- Keep the screen on during the exam ----
+    // Browsers report "screen turned off" the same way as a tab switch, so a
+    // screen timeout on mobile would count as a violation. A screen wake lock
+    // stops the device from dimming/locking while the exam page is visible.
+    // The browser releases the lock whenever the page is hidden, so it is
+    // re-acquired each time the page becomes visible again.
+    let screenWakeLock = null;
+
+    async function requestScreenWakeLock() {
+        if (!('wakeLock' in navigator) || document.hidden || screenWakeLock) return;
+        try {
+            screenWakeLock = await navigator.wakeLock.request('screen');
+            screenWakeLock.addEventListener('release', function() {
+                screenWakeLock = null;
+            });
+        } catch (e) {
+            // Denied (e.g. battery saver) or not allowed yet; retried on next interaction/visibility
+            screenWakeLock = null;
+        }
+    }
+
+    requestScreenWakeLock();
+    // Some browsers only grant the lock after a user interaction
+    document.addEventListener('click', requestScreenWakeLock);
+    document.addEventListener('touchend', requestScreenWakeLock);
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) requestScreenWakeLock();
+    });
+
     document.addEventListener("visibilitychange", function() {
         if (!document.hidden || isAutoSubmitting) return;
 

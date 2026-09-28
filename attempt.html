@@ -44,6 +44,11 @@
             padding: 0 8px;
             animation: network-banner-flash 1s ease-in-out infinite;
         }
+        .network-unstable-banner.is-submit-retry {
+            background-color: #ffc107;
+            color: #333;
+            animation: none;
+        }
         .network-unstable-banner.is-back-online {
             background-color: #28a745;
             animation: none;
@@ -58,8 +63,11 @@
 
     <body class="animated-content" ng-app="attemptExamApp" ng-controller="attemptExamController" ng-cloak>
 
-		<div class="network-unstable-banner" ng-show="showNetworkUnstableBanner" role="alert">
+		<div class="network-unstable-banner" ng-show="showNetworkUnstableBanner && !showSubmitRetryBanner" role="alert">
 		    <i class="fa fa-exclamation-triangle" style="margin-right: 5px;"></i>Your internet connection is unstable, progress might not be saved
+		</div>
+		<div class="network-unstable-banner is-submit-retry" ng-show="showSubmitRetryBanner" role="alert">
+		    <i class="fa fa-exclamation-triangle" style="margin-right: 5px;"></i>Please try to submit again, your internet was unstable
 		</div>
 		<div class="network-unstable-banner is-back-online" ng-show="showBackOnlineBanner" role="status">
 		    <i class="fa fa-check-circle" style="margin-right: 5px;"></i>Back Online! Progress saved.

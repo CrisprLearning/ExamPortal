@@ -1433,7 +1433,8 @@ angular.module('attemptExamApp', ['ngCookies'])
                 callback: function (result) {
                     if(result) {
                         $scope.countdownElement.textContent = "Submitting";
-                        $scope.saveExamProgress("TERMINATE");
+                        $scope.showSubmitRetryBanner = false;
+                        $scope.saveExamProgress("TERMINATE", true);
                     } else {
                         document.getElementById("submit-exam-button-1").classList.remove("active");
                         $scope.countdownElement.textContent = "Submit Exam"
@@ -1487,8 +1488,10 @@ angular.module('attemptExamApp', ['ngCookies'])
     let backOnlineBannerPromise = null;
     $scope.showNetworkUnstableBanner = false;
     $scope.showBackOnlineBanner = false;
+    $scope.showSubmitRetryBanner = false; // Yellow banner: manual "Submit Exam" hit a network error
 
     function onSaveProgressReachedServer() {
+        $scope.showSubmitRetryBanner = false;
         if (consecutiveSaveFailures >= SAVE_FAILURE_BANNER_THRESHOLD) {
             $scope.showNetworkUnstableBanner = false;
             $scope.showBackOnlineBanner = true;
@@ -1509,7 +1512,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         }
     }
 
-    $scope.saveExamProgress = function(endExamFlag) { //Note: also auto-save every 30s
+    $scope.saveExamProgress = function(endExamFlag, isManualSubmit) { //Note: also auto-save every 30s
 
         var examSubmissionData = localStorage.getItem("examSubmissionData") ? JSON.parse(localStorage.getItem("examSubmissionData")) : {};
         var timestampData = localStorage.getItem("questionTimeTracker") ? JSON.parse(localStorage.getItem("questionTimeTracker")) : {};
@@ -1581,6 +1584,12 @@ angular.module('attemptExamApp', ['ngCookies'])
         }, function() {
             // Network error / no response from the server
             onSaveProgressNetworkError();
+
+            if (isManualSubmit) { // Let the user retry the submission
+                $scope.showSubmitRetryBanner = true;
+                $scope.countdownElement.textContent = "Submit Exam";
+                document.getElementById("submit-exam-button-1").classList.remove("active");
+            }
         });
     }
 

@@ -240,6 +240,38 @@ angular.module('attemptExamApp', ['ngCookies'])
 
     $scope.questionCacheStatus = { total: 0, loaded: 0, failed: 0, done: false };
 
+    /***********************************************************************
+     * EXAM LOADING SCREEN
+     * "Loading, please wait." stays up until the quiz is fetched, the previous
+     * answers are restored (resume case) and every question image was attempted.
+     ***********************************************************************/
+    $scope.examLoadingScreen = true;
+    let examQuizFetched = false;
+    let answersRestoreRetrying = false;
+
+    function refreshExamLoadingScreen() {
+        if (!$scope.examLoadingScreen) return; // once dismissed it never comes back on its own
+        if (examQuizFetched && !answersRestorePending && $scope.questionCacheStatus.done) {
+            $scope.examLoadingScreen = false;
+        }
+    }
+
+    // The bar follows the question image download progress
+    $scope.getExamLoadingPercentage = function() {
+        const status = $scope.questionCacheStatus;
+        if (status.done) return 100;
+        if (!status.total) return 0;
+        return Math.round(((status.loaded + status.failed) / status.total) * 100);
+    };
+
+    $scope.getExamLoadingNote = function() {
+        if (answersRestoreRetrying) return "Waiting for the network to restore your previous answers…";
+        const status = $scope.questionCacheStatus;
+        if (!status.total) return "";
+        if (status.done) return "Restoring your previous answers…";
+        return "Loading questions " + (status.loaded + status.failed) + " of " + status.total;
+    };
+
     function isQuestionCached(key) {
         return cachedUrlByKey.has(key) || warmImageByKey.has(key);
     }
@@ -376,9 +408,12 @@ angular.module('attemptExamApp', ['ngCookies'])
 
     async function cacheQuestionOnce(question) {
         const key = question.questionDisplayKey;
+        // Persist by key + url: with randomised order the same display key can point to a
+        // different question after a reload, so a blob is only reused for the exact same image
+        const idbKey = key + '|' + question.url;
 
         // 1) Already persisted from an earlier page load?
-        const storedBlob = await idbGet(key);
+        const storedBlob = await idbGet(idbKey);
         if (isImageBlob(storedBlob)) {
             storeCachedBlob(key, storedBlob);
             return true;
@@ -388,7 +423,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         try {
             const blob = await fetchQuestionBlob(question.url);
             storeCachedBlob(key, blob);
-            idbPut(key, blob);
+            idbPut(idbKey, blob);
             return true;
         } catch (fetchError) {
             // 3) Fall back to warming the browser cache through an <img>
@@ -455,7 +490,10 @@ angular.module('attemptExamApp', ['ngCookies'])
         const queue = buildPreloadOrder($scope.examDetails, startSectionId, startQuestionId);
 
         $scope.questionCacheStatus = { total: queue.length, loaded: 0, failed: 0, done: queue.length === 0 };
-        if (queue.length === 0) return;
+        if (queue.length === 0) {
+            refreshExamLoadingScreen();
+            return;
+        }
 
         openImageDb().then(function() {
             let next = 0;
@@ -475,6 +513,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         }).then(function() {
             if (runId !== preloadRunId) return;
             $scope.questionCacheStatus.done = true;
+            refreshExamLoadingScreen();
             $scope.$applyAsync();
         });
     };
@@ -930,6 +969,8 @@ angular.module('attemptExamApp', ['ngCookies'])
                     if(result) {
                         //Clear Cached local storage and continue
                         clearAllExamRelatedStorage();
+                        examQuizFetched = false;
+                        $scope.examLoadingScreen = true;
                         
                         setTimeout(function() {
                             $scope.initialiseExam();
@@ -964,9 +1005,86 @@ angular.module('attemptExamApp', ['ngCookies'])
         return currentToken == getExamTokenFromURL();
     }
 
+    /***********************************************************************
+     * RESUME: RESTORE PREVIOUS ANSWERS BEFORE SAVING
+     * When an exam is re-opened with no local data, the answers saved earlier
+     * must be pulled from the server before any save-progress call goes out,
+     * otherwise the (empty) local state overwrites them on the server.
+     * The pending flag is persisted so a page reload mid-restore stays blocked.
+     ***********************************************************************/
+    const RESTORE_PENDING_STORAGE_KEY = "examAnswersRestorePending";
+    const RESTORE_RETRY_MS = 3000;
+    let deferredTerminateSave = null; // Submit requested while the restore was still pending
+
+    function isAnswersRestoreNeeded() {
+        return isExamLocalDataAbsent() || localStorage.getItem(RESTORE_PENDING_STORAGE_KEY) !== null;
+    }
+
+    // Saving stays blocked while this is true
+    let answersRestorePending = isAnswersRestoreNeeded();
+
+    function readStoredObject(key) {
+        try {
+            return JSON.parse(localStorage.getItem(key)) || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function onAnswersRestoreSettled() {
+        answersRestorePending = false;
+        answersRestoreRetrying = false;
+        localStorage.removeItem(RESTORE_PENDING_STORAGE_KEY);
+        refreshExamLoadingScreen();
+
+        if (deferredTerminateSave) {
+            const isManualSubmit = deferredTerminateSave.isManualSubmit;
+            deferredTerminateSave = null;
+            $scope.saveExamProgress("TERMINATE", isManualSubmit);
+        }
+    }
+
+    // Server copy is the base; anything the student did while the restore was in flight is kept on top
+    function applyRestoredSubmission(submissionData) {
+        let timeData = {};
+        let answerData = {};
+
+        for (let key in submissionData) {
+            if (!submissionData.hasOwnProperty(key)) continue;
+
+            timeData[key] = parseInt(submissionData[key].ts) || 0;
+
+            if (submissionData[key].t > 0) {
+                answerData[key] = {
+                    t: submissionData[key].t,
+                    a: submissionData[key].a
+                };
+            }
+        }
+
+        const localTimes = readStoredObject("questionTimeTracker");
+        for (let key in localTimes) {
+            timeData[key] = (timeData[key] || 0) + (parseInt(localTimes[key]) || 0);
+        }
+
+        const localAnswers = readStoredObject("examSubmissionData");
+        for (let key in localAnswers) {
+            const actedOnLocally = localAnswers[key] && localAnswers[key].t > ANSWER_MODES.NOT_ANSWERED;
+            if (actedOnLocally || !answerData[key]) {
+                answerData[key] = localAnswers[key];
+            }
+        }
+
+        localStorage.setItem("questionTimeTracker", JSON.stringify(timeData));
+        localStorage.setItem("examSubmissionData", JSON.stringify(answerData));
+    }
+
     $scope.loadLastSubmissionDataFromServer = function() {
 
         console.log('pulling submission from server')
+
+        answersRestorePending = true;
+        localStorage.setItem(RESTORE_PENDING_STORAGE_KEY, getExamTokenFromURL());
 
         let browserFingerprint = {
             screenWidth: screen.width,
@@ -993,30 +1111,49 @@ angular.module('attemptExamApp', ['ngCookies'])
          })
          .then(function(response) {
             if(response.data.status == "success"){
-                var submissionData = response.data.data;
+                applyRestoredSubmission(response.data.data);
 
-                let timeData = {};
-                let answerData = {};
-
-                for (let key in submissionData) {
-                    if (submissionData.hasOwnProperty(key)) {
-                        timeData[key] = parseInt(submissionData[key].ts);
-                    }
-
-                    if (submissionData[key].t > 0) {
-                        answerData[key] = {
-                            t: submissionData[key].t,
-                            a: submissionData[key].a
-                        };
-                    }
-                }
-
-                localStorage.setItem("questionTimeTracker", JSON.stringify(timeData));
-                localStorage.setItem("examSubmissionData", JSON.stringify(answerData));
-
-                $scope.loadSectionWithQuestion(sectionId, questionId);
+                //Re-render the question the student is on now (they may have moved meanwhile)
+                $scope.loadSectionWithQuestion($scope.currentOpenSection, $scope.currentOpenQuestion);
             }
+
+            //Server answered (restored, or nothing to restore): saving can start now
+            onAnswersRestoreSettled();
+        }, function() {
+            //Network error: previous answers are still unknown, so keep saving blocked and retry
+            answersRestoreRetrying = true;
+            $timeout($scope.loadLastSubmissionDataFromServer, RESTORE_RETRY_MS);
         });
+    }
+
+    // Expiry (epoch seconds) of the login token; null when it isn't a readable JWT
+    function getUserTokenExpiry() {
+        try {
+            var parts = String(getUserToken()).split('.');
+            if (parts.length !== 3) return null;
+            var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            var exp = parseInt(JSON.parse(atob(b64)).exp, 10);
+            return isNaN(exp) ? null : exp;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function isUserTokenExpired() {
+        var expiry = getUserTokenExpiry();
+        return expiry !== null && expiry <= Math.floor(Date.now() / 1000);
+    }
+
+    //Expired login looks like "no active exam" to the API; tell the student to login again instead
+    function showExamErrorBanner() {
+        if(isUserTokenExpired()) {
+            document.getElementById("examErrorBannerTitle").textContent = "Your login session has expired.";
+            document.getElementById("examErrorBannerText").innerHTML =
+                "The exam timer keeps running, so please do this quickly.<br>" +
+                "Please logout and login again in the Candidate Portal or Crispr Students App, then resume the exam.";
+        }
+        document.getElementById("examErrorBanner").style.display = 'flex';
     }
 
     $scope.initialiseExam = function(){
@@ -1050,6 +1187,10 @@ angular.module('attemptExamApp', ['ngCookies'])
          .then(function(response) {
             if(response.data.status == "success"){
 
+                //Decide before anything below writes to localStorage; blocks saving until restored
+                const needsAnswersRestore = isAnswersRestoreNeeded();
+                answersRestorePending = needsAnswersRestore;
+
                 rememberExamToken(); //to prevent exam interruption
 
                 $scope.examDetails = response.data.data;
@@ -1078,12 +1219,23 @@ angular.module('attemptExamApp', ['ngCookies'])
                 const display2 = document.querySelector('#timerCountDown2');
                 $scope.startTimer(totalTimeRemaining, display1, display2);
 
-                if(isExamLocalDataAbsent()) {
-                    $scope.loadLastSubmissionDataFromServer(sectionId, questionId);
+                if(needsAnswersRestore) {
+                    $scope.loadLastSubmissionDataFromServer();
                 }
+
+                examQuizFetched = true;
+                refreshExamLoadingScreen();
             } else {
+                $scope.examLoadingScreen = false;
                 $scope.examDetailsFound = false;
-                document.getElementById("examErrorBanner").style.display = 'flex';
+                showExamErrorBanner();
+            }
+        }, function() {
+            //Auth failure from an expired login token comes back as an HTTP error
+            if(isUserTokenExpired()) {
+                $scope.examLoadingScreen = false;
+                $scope.examDetailsFound = false;
+                showExamErrorBanner();
             }
         });
     
@@ -1239,7 +1391,7 @@ angular.module('attemptExamApp', ['ngCookies'])
             }
         }
         localStorage.setItem("examSubmissionData", JSON.stringify(examSubmissionData));
-        $scope.answerDisplayContentRefresh();  
+        $scope.answerDisplayContentRefresh();
     }
 
     $scope.clearResponseForQuestion = function(questionKey) {
@@ -1460,6 +1612,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         localStorage.removeItem("userLastActiveTime");
         localStorage.removeItem("crisprMockTestToken"); 
         localStorage.removeItem("tabSwitchViolations");
+        localStorage.removeItem(RESTORE_PENDING_STORAGE_KEY);
         clearQuestionCache();
     }
 
@@ -1471,6 +1624,7 @@ angular.module('attemptExamApp', ['ngCookies'])
         $scope.allRunningTimers = [];
 
         $scope.examDetailsFound = false;
+        $scope.examLoadingScreen = false;
         clearAllExamRelatedStorage();
         document.getElementById("examCompletedBanner").style.display = 'flex';
         if(reportURL) {
@@ -1512,7 +1666,15 @@ angular.module('attemptExamApp', ['ngCookies'])
         }
     }
 
-    $scope.saveExamProgress = function(endExamFlag, isManualSubmit) { //Note: also auto-save every 30s
+    $scope.saveExamProgress = function(endExamFlag, isManualSubmit) { //Note: also auto-save every 10s
+
+        //Never save before the previous answers are restored (would overwrite them on the server)
+        if (answersRestorePending) {
+            if (endExamFlag == "TERMINATE") { //Submit as soon as the restore completes
+                deferredTerminateSave = { isManualSubmit: isManualSubmit };
+            }
+            return;
+        }
 
         var examSubmissionData = localStorage.getItem("examSubmissionData") ? JSON.parse(localStorage.getItem("examSubmissionData")) : {};
         var timestampData = localStorage.getItem("questionTimeTracker") ? JSON.parse(localStorage.getItem("questionTimeTracker")) : {};

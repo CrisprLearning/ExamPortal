@@ -24,6 +24,46 @@
       <script src="controllers/attempt-exam.js"></script>
 
       <style>
+        /* Full-screen loader: previous answers being restored + question images downloading */
+        .exam-loading-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 1035; /* above the header, below bootbox dialogs */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: #f3f3f3;
+            text-align: center;
+        }
+        .exam-loading-screen-title {
+            margin: 0 0 18px 0;
+            color: #444;
+            font-size: 22px;
+            font-weight: 600;
+        }
+        .exam-loading-screen-track {
+            width: 100%;
+            max-width: 360px;
+            height: 8px;
+            border-radius: 4px;
+            background: #dcdcdc;
+            overflow: hidden;
+        }
+        .exam-loading-screen-bar {
+            height: 100%;
+            border-radius: 4px;
+            background: #008cff;
+            transition: width 0.3s ease;
+        }
+        .exam-loading-screen-note {
+            margin: 12px 0 0 0;
+            min-height: 20px;
+            color: #777;
+            font-size: 14px;
+        }
+
         /* Shown when save-progress keeps failing (network issues) */
         .network-unstable-banner {
             position: fixed;
@@ -73,10 +113,18 @@
 		    <i class="fa fa-check-circle" style="margin-right: 5px;"></i>Back Online! Progress saved.
 		</div>
 
+		<div class="exam-loading-screen" ng-show="examLoadingScreen" role="status" aria-live="polite">
+		    <p class="exam-loading-screen-title">Loading, please wait.</p>
+		    <div class="exam-loading-screen-track">
+		        <div class="exam-loading-screen-bar" ng-style="{'width': getExamLoadingPercentage() + '%'}"></div>
+		    </div>
+		    <p class="exam-loading-screen-note">{{getExamLoadingNote()}}</p>
+		</div>
+
 		<div id="examErrorBanner" class="examErrorBannerPopup">
 		    <div class="examErrorBannerPopup-content">
-		    	<h1 class="examErrorBannerPopup-title">No active exam found.</h1>
-		        <p>
+		    	<h1 class="examErrorBannerPopup-title" id="examErrorBannerTitle">No active exam found.</h1>
+		        <p id="examErrorBannerText">
 		            The exam you’re trying to attempt may have already ended.<br>
 		            You can start another exam from the Candidate Portal or Crispr Students App.
 		        </p>
@@ -108,10 +156,6 @@
 				            <span class="hours">00</span><span class="colon blink">:</span><span class="minutes">00</span><span class="colon blink">:</span><span class="seconds">00</span>
 				        </div>
 				    </div>
-		        </li>
-
-		        <li class="toolbar-icon-bg questionCacheIndicator" ng-show="questionCacheStatus.total > 0 && !questionCacheStatus.done" title="Downloading questions for offline use" style="line-height: 50px; padding: 0 10px; font-size: 13px; color: #777; white-space: nowrap;">
-		            <i class="fa fa-circle-o-notch fa-spin" style="margin-right: 5px;"></i><span class="hidden-xs">Loading questions </span>{{questionCacheStatus.loaded + questionCacheStatus.failed}}/{{questionCacheStatus.total}}
 		        </li>
 
 		        <li class="toolbar-icon-bg hidden-xs" id="trigger-fullscreen"> <!-- hidden-xs will hide on Mobile -->

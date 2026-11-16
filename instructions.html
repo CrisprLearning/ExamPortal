@@ -392,6 +392,7 @@
             localStorage.removeItem("userLastActiveTime");
             localStorage.removeItem("crisprMockTestToken");
             localStorage.removeItem("tabSwitchViolations");
+            localStorage.removeItem("examAnswersRestorePending");
         }
 
         function isExamDataPresent() {
@@ -449,7 +450,66 @@
             return mentionsKey && saysWrong;
         }
 
+        // ---- Login session vs exam duration ----
+        // Extra time on top of the exam duration, so the token still works for the final submit.
+        var SESSION_BUFFER_SECONDS = 5 * 60;
+
+        // Expiry (epoch seconds) of the login token, or null when it can't be read
+        // (only JWTs carry a readable "exp"; legacy encrypted tokens don't).
+        function getUserTokenExpiry() {
+            try {
+                var raw = getUserTokenForInstructions().replace(/^Bearer\s+/, '');
+                var parts = raw.split('.');
+                if (parts.length !== 3) return null;
+                var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                while (b64.length % 4) b64 += '=';
+                var payload = JSON.parse(atob(b64));
+                var exp = parseInt(payload.exp, 10);
+                return isNaN(exp) ? null : exp;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function getExamDurationSeconds() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const customData = JSON.parse(decodeURIComponent(urlParams.get('metadata')));
+                var minutes = parseFloat(customData["duration"]);
+                return isNaN(minutes) ? null : Math.ceil(minutes * 60);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function formatMinutes(seconds) {
+            var mins = Math.max(0, Math.floor(seconds / 60));
+            return mins + (mins === 1 ? " min" : " mins");
+        }
+
+        // True when the login session would end before the exam does; shows the re-login popup.
+        function blockIfSessionTooShort() {
+            var expiry = getUserTokenExpiry();
+            var duration = getExamDurationSeconds();
+            if (expiry === null || duration === null) return false;
+
+            var remaining = expiry - Math.floor(Date.now() / 1000);
+            if (remaining >= duration + SESSION_BUFFER_SECONDS) return false;
+
+            var message = remaining <= 0
+                ? "Your login session has expired. Please logout and login again, then start the exam."
+                : "Your login session ends in " + formatMinutes(remaining) + ", which is not enough to finish this " +
+                  formatMinutes(duration) + " exam. To avoid being interrupted during the exam, please logout and login again, then start the exam.";
+            showMessageModal(message, { type: 'warning', title: 'Please login again' });
+            return true;
+        }
+
         function startExamWithSecret(secret) {
+
+            if (blockIfSessionTooShort()) {
+                closeSecretModal();
+                return;
+            }
 
             const urlParams = new URLSearchParams(window.location.search);
             const quizKey = urlParams.get('quiz');
